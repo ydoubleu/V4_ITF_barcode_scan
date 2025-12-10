@@ -148,7 +148,16 @@ export const Scanner = React.memo<ScannerProps>(({ onScan, onError, isPaused }) 
         localStorage.setItem('scanner_last_device_id', activeId);
 
         // Update Label
-        const label = track.label || 'Unknown Camera';
+        let label = track.label || 'Unknown Camera';
+
+        // Translate and Clean Label
+        label = label
+          .replace(/facing back/i, '후면')
+          .replace(/facing front/i, '전면')
+          .replace(/camera/i, '카메라')
+          .replace(/back/i, '후면')
+          .replace(/front/i, '전면');
+
         setActiveCameraLabel(label);
 
         // Only show toast if switching (not initial load if possible, but hard to distinguish here easily. 
