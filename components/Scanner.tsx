@@ -1,31 +1,35 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { BrowserMultiFormatReader, BarcodeFormat, DecodeHintType } from '@zxing/library';
-import { AlertCircle, Scan } from 'lucide-react';
+import { AlertCircle, Scan, Camera } from 'lucide-react';
 
 interface ScannerProps {
   onScan: (result: string, format: string) => void;
   onError: (error: string) => void;
   isPaused: boolean;
-  s21Mode?: boolean; // S21 Mode
-  initialZoom?: number | null; // Session-based zoom
-  onZoomChange?: (zoom: number) => void; // Zoom change handler
 }
 
-// React.memo: Prevents unnecessary re-renders (camera restarts) when parent state changes
-export const Scanner = React.memo<ScannerProps>(({ onScan, onError, isPaused, s21Mode = false, initialZoom, onZoomChange }) => {
+// Camera Device Interface
+interface VideoInput {
+  deviceId: string;
+  label: string;
+}
+
+// React.memo: Prevents unnecessary re-renders
+export const Scanner = React.memo<ScannerProps>(({ onScan, onError, isPaused }) => {
   const [hasCameraPermission, setHasCameraPermission] = useState<boolean | null>(null);
-  
-  // Zoom State
-  const [zoom, setZoom] = useState<number>(1);
-  const [zoomCap, setZoomCap] = useState<{ min: number, max: number, step: number } | null>(null);
-  
+
+  // Camera State
+  const [activeDeviceId, setActiveDeviceId] = useState<string | null>(null);
+  const [availableCameras, setAvailableCameras] = useState<VideoInput[]>([]);
+  const [isSwitching, setIsSwitching] = useState(false);
+  const [resolutionDebug, setResolutionDebug] = useState<string>('');
+
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoTrackRef = useRef<MediaStreamTrack | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const codeReaderRef = useRef<BrowserMultiFormatReader | null>(null);
-  
-  // Track active state and busy state to prevent freezing
+
   const activeRef = useRef<boolean>(!isPaused);
   const isBusyRef = useRef<boolean>(false);
 
@@ -33,242 +37,205 @@ export const Scanner = React.memo<ScannerProps>(({ onScan, onError, isPaused, s2
     activeRef.current = !isPaused;
   }, [isPaused]);
 
-  // 1. Initialize Decoder Engine (ZXing) - STRICTLY ITF ONLY
+  // 1. Initialize Decoder Engine (ZXing)
   useEffect(() => {
     const hints = new Map<DecodeHintType, any>();
-    hints.set(DecodeHintType.POSSIBLE_FORMATS, [
-      BarcodeFormat.ITF // Changed: Only allow ITF format
-    ]);
-    hints.set(DecodeHintType.TRY_HARDER, true); // Enables rotation support (vertical barcodes)
-    
+    hints.set(DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.ITF]);
+    hints.set(DecodeHintType.TRY_HARDER, true);
+
     codeReaderRef.current = new BrowserMultiFormatReader(hints);
 
     return () => {
-      // Cleanup
       codeReaderRef.current = null;
     };
   }, []);
 
-  // 2. Start Camera Stream (Robust Fallback Logic & Watchdogs)
-  useEffect(() => {
-    let isMounted = true;
+  // 2. Discover Cameras
+  const refreshDeviceList = useCallback(async () => {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoInputs = devices
+        .filter(d => d.kind === 'videoinput')
+        .map(d => ({ deviceId: d.deviceId, label: d.label || `Camera ${d.deviceId.slice(0, 5)}...` }));
 
-    const startCamera = async () => {
+      // Filter out front cameras if possible (usually contain 'front' or 'selfie')
+      // But rely mostly on just listing them. User can switch.
+      // Prioritize Back cameras.
+      const backCameras = videoInputs.filter(d =>
+        d.label.toLowerCase().includes('back') ||
+        d.label.toLowerCase().includes('environment') ||
+        d.label.toLowerCase().includes('rear')
+      );
+
+      setAvailableCameras(backCameras.length > 0 ? backCameras : videoInputs);
+    } catch (e) {
+      console.error("Failed to list devices", e);
+    }
+  }, []);
+
+  // 3. Start Camera Function
+  const startCamera = useCallback(async (deviceId?: string) => {
+    setIsSwitching(true);
+    let currentStream = streamRef.current;
+
+    if (currentStream) {
+      currentStream.getTracks().forEach(t => t.stop());
+    }
+
+    try {
+      let constraints: MediaStreamConstraints = {
+        audio: false,
+        video: {
+          // Resolution Strategy: Try FHD (1080p) first, fallback handled in catch or by browser
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+          // If deviceId is provided, use it exactly. Otherwise prefer environment.
+          deviceId: deviceId ? { exact: deviceId } : undefined,
+          facingMode: deviceId ? undefined : 'environment'
+        }
+      };
+
+      let stream: MediaStream;
+
       try {
-        if (streamRef.current) {
-          streamRef.current.getTracks().forEach(t => t.stop());
-        }
-
-        let stream: MediaStream | null = null;
-
-        // Strategy: Use 'environment' camera with ideal resolution
-        try {
-          stream = await navigator.mediaDevices.getUserMedia({
-            audio: false,
-            video: { 
-              facingMode: 'environment', // Strictly prefer rear camera
-              // Use standard HD resolution which is well supported and performant
-              width: { ideal: 1280 }, 
-              height: { ideal: 720 }
-            }
-          });
-        } catch (err) {
-            console.error("Camera access failed", err);
-            throw err;
-        }
-
-        if (!isMounted) {
-            stream?.getTracks().forEach(t => t.stop());
-            return;
-        }
-
-        if (!stream) throw new Error("No stream found");
-
-        streamRef.current = stream;
-        
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          // Ensure play is called to prevent black screen on some devices
-          videoRef.current.onloadedmetadata = () => {
-             videoRef.current?.play().catch(e => console.error("Play error", e));
-          };
-        }
-
-        setHasCameraPermission(true);
-
-        const track = stream.getVideoTracks()[0];
-        videoTrackRef.current = track;
-        
-        // Watchdog 1: Handle unexpected track ending
-        track.onended = () => {
-            console.warn("Video track ended unexpectedly, restarting...");
-            if (isMounted) startCamera();
-        };
-
-        const capabilities = track.getCapabilities() as any;
-
-        // Setup Zoom
-        if (capabilities?.zoom) {
-          setZoomCap({
-            min: capabilities.zoom.min,
-            max: capabilities.zoom.max,
-            step: capabilities.zoom.step
-          });
-
-          // Determine Initial Zoom
-          // Priority: 1. Session Zoom (Prop), 2. Default (2.0x for ALL modes)
-          let targetZoom = 2.0; 
-
-          if (initialZoom != null) {
-              targetZoom = initialZoom;
-          } else {
-             // Unified 2.0x Zoom for both S21 Mode and Normal Mode
-             targetZoom = 2.0;
-          }
-          
-          // Clamp target zoom to device capabilities
-          const clampedZoom = Math.min(Math.max(targetZoom, capabilities.zoom.min), capabilities.zoom.max);
-          
-          setZoom(clampedZoom);
-          
-          // Apply initial zoom
-          try {
-            track.applyConstraints({ advanced: [{ zoom: clampedZoom }] } as any);
-          } catch (e) {
-            console.warn("Failed to apply initial zoom", e);
-          }
-        }
-
-        // Force Continuous Focus - Initial Attempt
-        const constraints = { advanced: [{ focusMode: 'continuous' }, { exposureMode: 'continuous' }] };
-        try {
-            await track.applyConstraints(constraints as any);
-        } catch(e) {
-            // Ignore if unsupported
-        }
-
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
       } catch (err) {
-        if (isMounted) {
-            console.error("Camera Init Error:", err);
-            setHasCameraPermission(false);
-            onError("카메라를 실행할 수 없습니다.");
+        console.warn("FHD failed, trying HD...");
+        // Fallback: 720p
+        constraints.video = {
+          ...constraints.video as MediaTrackConstraints,
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        };
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
+      }
+
+      streamRef.current = stream;
+
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.onloadedmetadata = () => {
+          videoRef.current?.play().catch(e => console.error("Play error", e));
+        };
+      }
+
+      setHasCameraPermission(true);
+
+      // Refresh device list now that we have permissions (labels will be visible)
+      refreshDeviceList();
+
+      const track = stream.getVideoTracks()[0];
+      videoTrackRef.current = track;
+
+      // --- Persistence & State Update ---
+      const activeId = track.getSettings().deviceId;
+      if (activeId) {
+        setActiveDeviceId(activeId);
+        localStorage.setItem('scanner_last_device_id', activeId);
+      }
+
+      // --- Auto Zoom (Optimization) ---
+      // Apply ~2.0x zoom automatically if supported
+      const cap = track.getCapabilities() as any;
+      if (cap.zoom) {
+        const targetZoom = Math.min(Math.max(2.0, cap.zoom.min), cap.zoom.max);
+        try {
+          await track.applyConstraints({ advanced: [{ zoom: targetZoom }] } as any);
+          console.log(`Auto-zoom applied: ${targetZoom}x`);
+        } catch (e) {
+          console.warn("Zoom apply failed", e);
         }
       }
-    };
 
-    startCamera();
+      // --- Auto Focus ---
+      try {
+        await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] } as any);
+      } catch (e) { }
 
-    // Watchdog 2: Visibility Change (Restart camera if tab comes back to foreground)
-    const handleVisibilityChange = () => {
-        if (document.visibilityState === 'visible') {
-            const track = streamRef.current?.getVideoTracks()[0];
-            if (!track || track.readyState === 'ended' || track.muted) {
-                console.log("Tab visible, restarting camera...");
-                startCamera();
-            }
-        }
-    };
-    document.addEventListener('visibilitychange', handleVisibilityChange);
+      // --- Debug Info ---
+      const set = track.getSettings();
+      setResolutionDebug(`${set.width}x${set.height}`);
 
-    return () => {
-      isMounted = false;
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => {
-            track.onended = null;
-            track.stop();
-        });
-      }
-      if (animationFrameRef.current) {
-        cancelAnimationFrame(animationFrameRef.current);
-      }
-    };
-  }, [onError, s21Mode]); // Re-run if s21Mode changes
+      // Handle Unexpected Stop
+      track.onended = () => {
+        console.warn("Track ended, restarting...");
+        startCamera(); // Re-trigger auto selection or saved ID
+      };
 
-  // Active Focus Maintenance Loop
+    } catch (err) {
+      console.error("Camera Error", err);
+      setHasCameraPermission(false);
+      onError("카메라를 실행할 수 없습니다. (권한/하드웨어)");
+    } finally {
+      setIsSwitching(false);
+    }
+  }, [onError, refreshDeviceList]);
+
+  // 4. Initial Mount
   useEffect(() => {
-      if (!hasCameraPermission) return;
-      
-      const focusInterval = setInterval(() => {
-          if (videoTrackRef.current && videoTrackRef.current.readyState === 'live') {
-              try {
-                  // Re-apply continuous focus
-                  videoTrackRef.current.applyConstraints({ 
-                      advanced: [{ focusMode: 'continuous' }] 
-                  } as any).catch(() => {});
-              } catch (e) {}
-          }
-      }, 2000); // Check every 2 seconds
+    const savedId = localStorage.getItem('scanner_last_device_id');
+    // If we have a saved ID, try to check if it still exists (optional, but good)
+    // For now, just try to use it. getUserMedia will fail if invalid, we can catch that?
+    // actually, let's just "Start" with savedId if present.
 
-      return () => clearInterval(focusInterval);
-  }, [hasCameraPermission]);
+    startCamera(savedId || undefined);
 
-  // 3. Decoding Loop (Heartbeat)
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        // Check if dead
+        const track = streamRef.current?.getVideoTracks()[0];
+        if (!track || track.readyState === 'ended' || track.muted) {
+          startCamera(activeDeviceId || undefined);
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility);
+      streamRef.current?.getTracks().forEach(t => t.stop());
+      if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
+    };
+  }, []); // Run once on mount
+
+  // 5. Decoding Loop
   useEffect(() => {
     if (!hasCameraPermission || !codeReaderRef.current) return;
 
-    let stopLoop = false;
-
     const loop = async () => {
-      if (stopLoop) return;
-
-      // Heartbeat: Always request next frame to keep thread alive
       animationFrameRef.current = requestAnimationFrame(loop);
 
-      if (!activeRef.current) return;
-      if (isBusyRef.current) return;
+      if (!activeRef.current || isBusyRef.current || isSwitching) return;
 
       const video = videoRef.current;
       if (!video || video.readyState !== video.HAVE_ENOUGH_DATA) return;
 
       try {
-        isBusyRef.current = true; // Lock
-
-        if (codeReaderRef.current) {
-            // @ts-ignore
-            const result = await codeReaderRef.current.decode(video);
-            
-            if (activeRef.current && result) {
-                onScan(result.getText(), result.getBarcodeFormat().toString());
-            }
+        isBusyRef.current = true;
+        // @ts-ignore
+        const result = await codeReaderRef.current.decode(video);
+        if (activeRef.current && result) {
+          onScan(result.getText(), result.getBarcodeFormat().toString());
         }
       } catch (err) {
-        // NotFoundException is expected
+        // No code found
       } finally {
-        isBusyRef.current = false; // Unlock
+        isBusyRef.current = false;
       }
     };
-
     loop();
+    return () => { if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current); };
+  }, [hasCameraPermission, onScan, isSwitching]);
 
-    return () => {
-      stopLoop = true;
-      if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
-    };
-  }, [hasCameraPermission, onScan]);
+  // 6. Manual Switch Handler
+  const handleSwitchCamera = () => {
+    if (availableCameras.length < 2) return;
 
+    const currentIndex = availableCameras.findIndex(c => c.deviceId === activeDeviceId);
+    const nextIndex = (currentIndex + 1) % availableCameras.length;
+    const nextDevice = availableCameras[nextIndex];
 
-  const handleZoom = (newZoom: number) => {
-    if (!zoomCap) return;
-    
-    // Clamp value
-    const clamped = Math.min(Math.max(newZoom, zoomCap.min), zoomCap.max);
-    
-    setZoom(clamped);
-    
-    // Notify parent to store in session
-    if (onZoomChange) {
-        onZoomChange(clamped);
-    }
-
-    if (videoTrackRef.current) {
-      try {
-        const constraints = { advanced: [{ zoom: clamped }] };
-        videoTrackRef.current.applyConstraints(constraints as any);
-      } catch (err) {
-        console.error("Zoom failed", err);
-      }
-    }
+    startCamera(nextDevice.deviceId);
   };
 
   if (hasCameraPermission === false) {
@@ -276,7 +243,6 @@ export const Scanner = React.memo<ScannerProps>(({ onScan, onError, isPaused, s2
       <div className="flex flex-col items-center justify-center h-full text-red-400 p-6 text-center bg-slate-900">
         <AlertCircle size={48} className="mb-4" />
         <p className="text-lg font-semibold">카메라 오류</p>
-        <p className="text-sm mt-2 text-slate-400">카메라 권한을 확인해주세요.</p>
         <button onClick={() => window.location.reload()} className="mt-4 bg-slate-700 px-4 py-2 rounded">새로고침</button>
       </div>
     );
@@ -284,49 +250,47 @@ export const Scanner = React.memo<ScannerProps>(({ onScan, onError, isPaused, s2
 
   return (
     <div className="relative w-full h-full bg-black flex flex-col overflow-hidden">
-      <video 
-        ref={videoRef} 
-        className="w-full h-full object-cover" 
-        muted 
-        playsInline 
+      <video
+        ref={videoRef}
+        className="w-full h-full object-cover"
+        muted
+        playsInline
         autoPlay
       />
-      
+
       {/* Scan Guide Overlay */}
-      <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
-          {/* Laser Line - Vertical */}
-          <div className="absolute w-0.5 h-full bg-red-500/80 shadow-[0_0_8px_rgba(239,68,68,0.8)]"></div>
-          
-          {/* Visual Guide Box - Dynamic Size based on S21 Mode */}
-          <div className={`
-            ${s21Mode 
-                ? 'w-[70px] h-[110px] landscape:w-[110px] landscape:h-[70px]' 
-                : 'w-[140px] h-[220px] landscape:w-[220px] landscape:h-[140px]'
-            } 
-            border-2 border-white/40 rounded-lg shadow-[0_0_0_9999px_rgba(0,0,0,0.4)] box-border relative transition-all duration-300
-          `}>
-              <div className="absolute top-0 left-0 w-3 h-3 border-t-2 border-l-2 border-emerald-400 -mt-0.5 -ml-0.5 rounded-tl-sm"></div>
-              <div className="absolute top-0 right-0 w-3 h-3 border-t-2 border-r-2 border-emerald-400 -mt-0.5 -mr-0.5 rounded-tr-sm"></div>
-              <div className="absolute bottom-0 left-0 w-3 h-3 border-b-2 border-l-2 border-emerald-400 -mb-0.5 -ml-0.5 rounded-bl-sm"></div>
-              <div className="absolute bottom-0 right-0 w-3 h-3 border-b-2 border-r-2 border-emerald-400 -mb-0.5 -mr-0.5 rounded-br-sm"></div>
-          </div>
+      <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10 transition-all duration-300">
+        {/* Laser Line */}
+        <div className="absolute w-0.5 h-full bg-red-500/80 shadow-[0_0_8px_rgba(239,68,68,0.8)]"></div>
+
+        {/* Box - Standard Size (Optimized for 2.0x zoom context) */}
+        <div className="w-[180px] h-[100px] border-2 border-white/40 rounded-lg shadow-[0_0_0_9999px_rgba(0,0,0,0.5)] box-border relative">
+          <div className="absolute top-0 left-0 w-3 h-3 border-t-2 border-l-2 border-emerald-400 -mt-0.5 -ml-0.5"></div>
+          <div className="absolute top-0 right-0 w-3 h-3 border-t-2 border-r-2 border-emerald-400 -mt-0.5 -mr-0.5"></div>
+          <div className="absolute bottom-0 left-0 w-3 h-3 border-b-2 border-l-2 border-emerald-400 -mb-0.5 -ml-0.5"></div>
+          <div className="absolute bottom-0 right-0 w-3 h-3 border-b-2 border-r-2 border-emerald-400 -mb-0.5 -mr-0.5"></div>
+        </div>
       </div>
 
-      {/* Mode Indicator */}
-      <div className="absolute top-4 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1 pointer-events-none z-20 whitespace-nowrap">
-         <div className="flex items-center gap-1 text-[10px] text-white/70 bg-black/40 px-3 py-1 rounded-full backdrop-blur-sm border border-white/10">
-            <Scan size={12} className="text-emerald-400"/>
-            <span>ITF 바코드를 박스 안에 맞춰주세요</span>
-         </div>
-         {s21Mode ? (
-             <span className="text-[10px] text-emerald-400 font-bold bg-emerald-900/60 px-2 py-0.5 rounded border border-emerald-500/30">
-                 S21 모드 ON (고정 2.0x)
-             </span>
-         ) : (
-            <span className="text-[10px] text-slate-400 font-bold bg-slate-800/60 px-2 py-0.5 rounded border border-slate-500/30">
-                일반 모드 (고정 2.0x)
-            </span>
-         )}
+      {/* Controls Overlay */}
+      <div className="absolute bottom-6 right-6 z-30 flex flex-col gap-4">
+        {availableCameras.length > 1 && (
+          <button
+            onClick={handleSwitchCamera}
+            disabled={isSwitching}
+            className="bg-black/50 backdrop-blur-md text-white p-3 rounded-full border border-white/20 active:bg-emerald-600/50 transition-all shadow-lg"
+          >
+            <Camera size={24} className={isSwitching ? 'animate-spin' : ''} />
+          </button>
+        )}
+      </div>
+
+      {/* Top Info */}
+      <div className="absolute top-4 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1 pointer-events-none z-20 whitespace-nowrap opacity-80">
+        <div className="flex items-center gap-1 text-[10px] text-white/90 bg-black/60 px-3 py-1 rounded-full backdrop-blur-sm border border-white/10">
+          <Scan size={12} className="text-emerald-400" />
+          <span>ITF 바코드 스캔 ({resolutionDebug})</span>
+        </div>
       </div>
     </div>
   );
