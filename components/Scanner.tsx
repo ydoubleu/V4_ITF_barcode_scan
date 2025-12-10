@@ -263,8 +263,8 @@ export const Scanner = React.memo<ScannerProps>(({ onScan, onError, isPaused }) 
         {/* Laser Line */}
         <div className="absolute w-0.5 h-full bg-red-500/80 shadow-[0_0_8px_rgba(239,68,68,0.8)]"></div>
 
-        {/* Box - Standard Size (Optimized for 2.0x zoom context) */}
-        <div className="w-[180px] h-[100px] border-2 border-white/40 rounded-lg shadow-[0_0_0_9999px_rgba(0,0,0,0.5)] box-border relative">
+        {/* Box - Portrait Size (Optimized for mobile) */}
+        <div className="w-[140px] h-[240px] border-2 border-white/40 rounded-lg shadow-[0_0_0_9999px_rgba(0,0,0,0.5)] box-border relative">
           <div className="absolute top-0 left-0 w-3 h-3 border-t-2 border-l-2 border-emerald-400 -mt-0.5 -ml-0.5"></div>
           <div className="absolute top-0 right-0 w-3 h-3 border-t-2 border-r-2 border-emerald-400 -mt-0.5 -mr-0.5"></div>
           <div className="absolute bottom-0 left-0 w-3 h-3 border-b-2 border-l-2 border-emerald-400 -mb-0.5 -ml-0.5"></div>
