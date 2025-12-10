@@ -244,10 +244,33 @@ export const Scanner = React.memo<ScannerProps>(({ onScan, onError, isPaused }) 
 
       try {
         isBusyRef.current = true;
-        // @ts-ignore
-        const result = await codeReaderRef.current.decode(video);
-        if (activeRef.current && result) {
-          onScan(result.getText(), result.getBarcodeFormat().toString());
+
+        // 1. Setup Canvas for ROI (Region of Interest)
+        const vw = video.videoWidth;
+        const vh = video.videoHeight;
+
+        // Crop Dimensions (approx 50% of screen center)
+        const cropW = Math.floor(vw * 0.5);
+        const cropH = Math.floor(vh * 0.5);
+        const sx = Math.floor((vw - cropW) / 2);
+        const sy = Math.floor((vh - cropH) / 2);
+
+        const canvas = document.createElement('canvas');
+        canvas.width = cropW;
+        canvas.height = cropH;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+        if (ctx) {
+          ctx.drawImage(video, sx, sy, cropW, cropH, 0, 0, cropW, cropH);
+
+          // 2. Decode from Canvas
+          if (codeReaderRef.current) {
+            // @ts-ignore
+            const result = await codeReaderRef.current.decode(canvas);
+            if (activeRef.current && result) {
+              onScan(result.getText(), result.getBarcodeFormat().toString());
+            }
+          }
         }
       } catch (err) {
         // No code found
