@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="ko" translate="no">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="google" content="notranslate" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0, viewport-fit=cover" />
+    <meta name="theme-color" content="#0f172a" />
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <title>(주)피엘지 - 2025 국토부 디지털물류 실증 웹앱</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="manifest" href="/manifest.json" />
+    <style>
+      /* Prevent pull-to-refresh on mobile for better app-like feel */
+      html, body {
+        overscroll-behavior-y: none; /* Stricter than contain */
+        touch-action: pan-x pan-y; /* Disable double-tap zoom, etc. */
+        height: 100%;
+        overflow: hidden; /* Prevent body scroll */
+      }
+      #root {
+        height: 100%;
+      }
+    </style>
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "react-zxing": "https://aistudiocdn.com/react-zxing@^2.1.0",
+    "@zxing/library": "https://aistudiocdn.com/@zxing/library@^0.21.3",
+    "lucide-react": "https://aistudiocdn.com/lucide-react@^0.555.0"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+  <body class="bg-slate-900 text-white antialiased">
+    <div id="root"></div>
+    <!-- CRITICAL FIX: Load the React entry point -->
+    <script type="module" src="/index.tsx"></script>
+  </body>
+</html>

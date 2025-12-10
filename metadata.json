@@ -1,0 +1,7 @@
+{
+  "name": "V2(주)피엘지 - 2025 국토부 디지털물류 실증 웹앱",
+  "description": "A professional barcode scanner optimized for ITF (Interleaved 2 of 5) logistics codes with audio-visual feedback and data logging.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
