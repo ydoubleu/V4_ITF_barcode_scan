@@ -20,9 +20,11 @@ export const Scanner = React.memo<ScannerProps>(({ onScan, onError, isPaused }) 
 
   // Camera State
   const [activeDeviceId, setActiveDeviceId] = useState<string | null>(null);
+  const [activeCameraLabel, setActiveCameraLabel] = useState<string>('');
   const [availableCameras, setAvailableCameras] = useState<VideoInput[]>([]);
   const [isSwitching, setIsSwitching] = useState(false);
   const [resolutionDebug, setResolutionDebug] = useState<string>('');
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoTrackRef = useRef<MediaStreamTrack | null>(null);
@@ -37,6 +39,17 @@ export const Scanner = React.memo<ScannerProps>(({ onScan, onError, isPaused }) 
     activeRef.current = !isPaused;
   }, [isPaused]);
 
+  // Toast Timer Ref
+  const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showToast = (message: string) => {
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    setToastMessage(message);
+    toastTimeoutRef.current = setTimeout(() => {
+      setToastMessage(null);
+    }, 2000);
+  };
+
   // 1. Initialize Decoder Engine (ZXing)
   useEffect(() => {
     const hints = new Map<DecodeHintType, any>();
@@ -47,6 +60,7 @@ export const Scanner = React.memo<ScannerProps>(({ onScan, onError, isPaused }) 
 
     return () => {
       codeReaderRef.current = null;
+      if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
     };
   }, []);
 
@@ -132,6 +146,15 @@ export const Scanner = React.memo<ScannerProps>(({ onScan, onError, isPaused }) 
       if (activeId) {
         setActiveDeviceId(activeId);
         localStorage.setItem('scanner_last_device_id', activeId);
+
+        // Update Label
+        const label = track.label || 'Unknown Camera';
+        setActiveCameraLabel(label);
+
+        // Only show toast if switching (not initial load if possible, but hard to distinguish here easily. 
+        // We can check if isSwitching is true, but it is always true inside this function.
+        // Let's just always show it on successful start, it confirms "Camera Ready"
+        showToast(`📷 ${label}`);
       }
 
       // --- Auto Zoom (Optimization) ---
@@ -272,6 +295,15 @@ export const Scanner = React.memo<ScannerProps>(({ onScan, onError, isPaused }) 
         </div>
       </div>
 
+      {/* Toast Notification */}
+      {toastMessage && (
+        <div className="absolute bottom-24 left-1/2 -translate-x-1/2 z-40 animate-in fade-in slide-in-from-bottom-4 duration-300">
+          <div className="bg-black/70 backdrop-blur-md text-white text-xs px-4 py-2 rounded-full border border-white/10 shadow-lg flex items-center gap-2">
+            <span>{toastMessage}</span>
+          </div>
+        </div>
+      )}
+
       {/* Controls Overlay */}
       <div className="absolute bottom-6 right-6 z-30 flex flex-col gap-4">
         {availableCameras.length > 1 && (
@@ -287,9 +319,16 @@ export const Scanner = React.memo<ScannerProps>(({ onScan, onError, isPaused }) 
 
       {/* Top Info */}
       <div className="absolute top-4 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1 pointer-events-none z-20 whitespace-nowrap opacity-80">
-        <div className="flex items-center gap-1 text-[10px] text-white/90 bg-black/60 px-3 py-1 rounded-full backdrop-blur-sm border border-white/10">
-          <Scan size={12} className="text-emerald-400" />
-          <span>ITF 바코드 스캔 ({resolutionDebug})</span>
+        <div className="flex flex-col items-center gap-1">
+          <div className="flex items-center gap-1 text-[10px] text-white/90 bg-black/60 px-3 py-1 rounded-full backdrop-blur-sm border border-white/10">
+            <Scan size={12} className="text-emerald-400" />
+            <span>ITF 스캔 ({resolutionDebug})</span>
+          </div>
+          {activeCameraLabel && (
+            <span className="text-[9px] text-zinc-400 bg-black/40 px-2 py-0.5 rounded text-shadow">
+              {activeCameraLabel}
+            </span>
+          )}
         </div>
       </div>
     </div>
