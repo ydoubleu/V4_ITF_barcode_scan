@@ -140,8 +140,8 @@ export default function App() {
       return;
     }
 
-    // 3. Check Length (Must be 12 or 14)
-    if (code.length !== 12 && code.length !== 14) {
+    // 3. Check Length (Must be 14)
+    if (code.length !== 14) {
       triggerFeedback('error', '자릿수 오류', true);
       return;
     }
@@ -158,7 +158,7 @@ export default function App() {
 
     // Final Safety Check:
     // Ensure that between validation and here, nothing weird happened (rare race condition)
-    if ((code.length !== 12 && code.length !== 14) || scannedCodesRef.current.has(code)) {
+    if (code.length !== 14 || scannedCodesRef.current.has(code)) {
       isProcessing.current = false;
       return;
     }
